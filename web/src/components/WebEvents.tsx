@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { getWebEvents, getWebEventSites, type WebEvent } from '../lib/supabase'
 
 const EVENT_COLORS: Record<string, string> = {
@@ -20,7 +20,9 @@ function EventBadge({ type }: { type: string }) {
       style={{
         background: bg + '22',
         color: bg,
-        border: `1px solid ${bg}44`,
+        borderWidth: '1px',
+        borderStyle: 'solid',
+        borderColor: bg + '44',
         padding: '2px 8px',
         borderRadius: '4px',
         fontSize: '11px',
@@ -185,9 +187,8 @@ export default function WebEvents({ start, end, userId }: Props) {
             </thead>
             <tbody>
               {events.map((ev) => (
-                <>
+                <React.Fragment key={ev.id}>
                   <tr
-                    key={ev.id}
                     onClick={() => setExpandedId(expandedId === ev.id ? null : ev.id)}
                     style={{
                       borderBottom: '1px solid var(--border)',
@@ -226,7 +227,7 @@ export default function WebEvents({ start, end, userId }: Props) {
                     </td>
                   </tr>
                   {expandedId === ev.id && (
-                    <tr key={`${ev.id}-detail`}>
+                    <tr>
                       <td colSpan={4} style={{ padding: '8px 4px 16px', background: 'rgba(99,102,241,0.03)' }}>
                         <pre
                           style={{
@@ -257,7 +258,7 @@ export default function WebEvents({ start, end, userId }: Props) {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
             </tbody>
           </table>
