@@ -10,9 +10,16 @@
  * Sends "activity_pulse" events to Supabase every 60 seconds.
  */
 
-import { uIOhook, UiohookKeyboardEvent, UiohookMouseEvent, UiohookWheelEvent } from 'uiohook-napi'
 import { getSetting } from './database'
 import os from 'os'
+
+let uIOhook: any = null
+try {
+  const mod = require('uiohook-napi')
+  uIOhook = mod.uIOhook
+} catch (err) {
+  console.warn('[activity-monitor] uiohook-napi not available:', (err as Error).message)
+}
 
 const FLUSH_INTERVAL_MS = 60_000 // 1 minute
 
@@ -129,6 +136,11 @@ async function flush(): Promise<void> {
 export function startActivityMonitor(): void {
   if (started) return
 
+  if (!uIOhook) {
+    console.log('[activity-monitor] uiohook not available — activity monitor disabled')
+    return
+  }
+
   supabaseUrl = getSetting('supabase_url') || ''
   supabaseKey = getSetting('supabase_anon_key') || ''
 
@@ -137,28 +149,33 @@ export function startActivityMonitor(): void {
     return
   }
 
-  // Register uiohook listeners (only counts, never content)
-  uIOhook.on('keydown', (_e: UiohookKeyboardEvent) => {
-    counts.keystrokes++
-  })
+  try {
+    // Register uiohook listeners (only counts, never content)
+    uIOhook.on('keydown', () => {
+      counts.keystrokes++
+    })
 
-  uIOhook.on('click', (_e: UiohookMouseEvent) => {
-    counts.clicks++
-  })
+    uIOhook.on('click', () => {
+      counts.clicks++
+    })
 
-  uIOhook.on('wheel', (_e: UiohookWheelEvent) => {
-    counts.scrolls++
-  })
+    uIOhook.on('wheel', () => {
+      counts.scrolls++
+    })
 
-  // Start the hook
-  uIOhook.start()
-  started = true
+    // Start the hook
+    uIOhook.start()
+    started = true
 
-  // Authenticate and start flushing
-  authenticate().then(() => {
-    flushIntervalId = setInterval(flush, FLUSH_INTERVAL_MS)
-    console.log('[activity-monitor] Started — tracking activity intensity')
-  })
+    // Authenticate and start flushing
+    authenticate().then(() => {
+      flushIntervalId = setInterval(flush, FLUSH_INTERVAL_MS)
+      console.log('[activity-monitor] Started — tracking activity intensity')
+    })
+  } catch (err) {
+    console.error('[activity-monitor] Failed to start uiohook:', err)
+    console.log('[activity-monitor] App will continue without activity monitoring')
+  }
 }
 
 export function stopActivityMonitor(): void {
@@ -169,7 +186,11 @@ export function stopActivityMonitor(): void {
     clearInterval(flushIntervalId)
     flushIntervalId = null
   }
-  uIOhook.stop()
+  try {
+    uIOhook?.stop()
+  } catch {
+    // Ignore stop errors
+  }
   started = false
   console.log('[activity-monitor] Stopped')
 }
