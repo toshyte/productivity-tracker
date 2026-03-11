@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -39,11 +40,11 @@ jobs:
 
       - name: Build Mac installer
         if: matrix.platform == 'mac'
-        run: npx electron-builder --mac --config electron-builder.yml
+        run: npx electron-builder --mac --config electron-builder.yml --publish never
 
       - name: Build Windows installer
         if: matrix.platform == 'win'
-        run: npx electron-builder --win --config electron-builder.yml
+        run: npx electron-builder --win --config electron-builder.yml --publish never
 
       - name: Upload Mac DMG (Apple Silicon)
         if: matrix.platform == 'mac'
