@@ -11,9 +11,10 @@ import { formatDuration, percentOf } from '../lib/formatters'
 interface DashboardProps {
   start: string
   end: string
+  userId?: string
 }
 
-export default function Dashboard({ start, end }: DashboardProps) {
+export default function Dashboard({ start, end, userId }: DashboardProps) {
   const [timeline, setTimeline] = useState<TrackingEntry[]>([])
   const [summary, setSummary] = useState<AppSummaryT[]>([])
   const [trend, setTrend] = useState<TrendT[]>([])
@@ -23,9 +24,9 @@ export default function Dashboard({ start, end }: DashboardProps) {
   const fetchData = useCallback(async () => {
     setLoading(true)
     const [t, s, tr, c] = await Promise.all([
-      getTimeline(start, end),
-      getAppSummary(start, end),
-      getTrend(start, end),
+      getTimeline(start, end, userId),
+      getAppSummary(start, end, userId),
+      getTrend(start, end, userId),
       getAllApps()
     ])
     setTimeline(t)
@@ -33,7 +34,7 @@ export default function Dashboard({ start, end }: DashboardProps) {
     setTrend(tr)
     setCats(c)
     setLoading(false)
-  }, [start, end])
+  }, [start, end, userId])
 
   useEffect(() => {
     fetchData()

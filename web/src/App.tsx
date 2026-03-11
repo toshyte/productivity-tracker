@@ -3,7 +3,7 @@ import LoginScreen from './components/LoginScreen'
 import DatePicker from './components/DatePicker'
 import Dashboard from './components/Dashboard'
 import WebEvents from './components/WebEvents'
-import { getSession, signOut, isConfigured } from './lib/supabase'
+import { getSession, signOut, isConfigured, getUsers, getCurrentProfile, type UserProfile } from './lib/supabase'
 import { todayRange, weekRange, monthRange } from './lib/formatters'
 
 function getRange(range: string): [string, string] {
@@ -19,6 +19,9 @@ export default function App() {
   const [checking, setChecking] = useState(true)
   const [activeRange, setActiveRange] = useState('today')
   const [activeTab, setActiveTab] = useState<'desktop' | 'web'>('desktop')
+  const [users, setUsers] = useState<UserProfile[]>([])
+  const [selectedUserId, setSelectedUserId] = useState<string>('')
+  const [isAdmin, setIsAdmin] = useState(false)
 
   const configured = isConfigured()
 
@@ -32,6 +35,16 @@ export default function App() {
       setChecking(false)
     })
   }, [configured])
+
+  useEffect(() => {
+    if (!loggedIn) return
+    getCurrentProfile().then((profile) => {
+      if (profile?.is_admin) {
+        setIsAdmin(true)
+        getUsers().then(setUsers)
+      }
+    })
+  }, [loggedIn])
 
   if (checking) {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', color: 'var(--text-muted)' }}>Loading...</div>
@@ -62,6 +75,27 @@ export default function App() {
           <DatePicker activeRange={activeRange} onRangeChange={setActiveRange} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {isAdmin && users.length > 0 && (
+            <select
+              value={selectedUserId}
+              onChange={(e) => setSelectedUserId(e.target.value)}
+              style={{
+                background: 'var(--card)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '8px 12px',
+                fontSize: '13px'
+              }}
+            >
+              <option value="">All Users</option>
+              {users.map((u) => (
+                <option key={u.user_id} value={u.user_id}>
+                  {u.display_name || u.email}
+                </option>
+              ))}
+            </select>
+          )}
           <div style={{ display: 'flex', gap: '4px', background: 'var(--card)', borderRadius: '8px', padding: '3px' }}>
             <button onClick={() => setActiveTab('desktop')} style={tabStyle('desktop')}>Desktop</button>
             <button onClick={() => setActiveTab('web')} style={tabStyle('web')}>Web Events</button>
@@ -75,9 +109,9 @@ export default function App() {
         </div>
       </div>
       {activeTab === 'desktop' ? (
-        <Dashboard start={start} end={end} />
+        <Dashboard start={start} end={end} userId={selectedUserId || undefined} />
       ) : (
-        <WebEvents start={start} end={end} />
+        <WebEvents start={start} end={end} userId={selectedUserId || undefined} />
       )}
     </div>
   )

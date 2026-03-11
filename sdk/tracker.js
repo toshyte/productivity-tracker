@@ -3,8 +3,10 @@
  *
  * Drop this script into any web app to auto-track:
  *   - Page views (navigation + SPA route changes)
- *   - Button/link clicks
+ *   - Button/link clicks with element details
  *   - Form submissions
+ *   - Keyboard typing activity with typed text
+ *   - Mouse click activity with click coordinates
  *   - Custom events via window.tracker.track()
  *
  * Usage:
@@ -25,6 +27,7 @@
 
   const BATCH_INTERVAL = 5000 // flush every 5s
   const MAX_BATCH = 50
+  const ACTIVITY_PULSE_INTERVAL = 60000 // 1 minute
 
   let supabaseUrl = ''
   let supabaseKey = ''
@@ -34,6 +37,14 @@
   let queue = []
   let initialized = false
   let flushTimer = null
+  let activityPulseTimer = null
+
+  // Activity counters (reset every minute)
+  let keyboardCount = 0
+  let mouseClickCount = 0
+  let scrollCount = 0
+  let typedText = ''
+  let clickedElements = []
 
   // ── Helpers ──────────────────────────────────────────────
 
@@ -43,6 +54,25 @@
 
   function truncate(str, max) {
     return typeof str === 'string' ? str.slice(0, max) : ''
+  }
+
+  function getElementPath(el) {
+    const path = []
+    while (el && el.nodeType === 1) {
+      let selector = el.tagName.toLowerCase()
+      if (el.id) {
+        selector += '#' + el.id
+        path.unshift(selector)
+        break
+      } else {
+        if (el.className) {
+          selector += '.' + el.className.split(' ').join('.')
+        }
+        path.unshift(selector)
+      }
+      el = el.parentElement
+    }
+    return path.join(' > ')
   }
 
   // ── Auth ─────────────────────────────────────────────────
@@ -118,33 +148,133 @@
     }
   }
 
+  // ── Activity Tracking ────────────────────────────────────
+
+  function trackKeyboard() {
+    document.addEventListener('keydown', function (e) {
+      // Ignore modifier keys alone
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+
+      keyboardCount++
+
+      // Build display representation of key
+      let keyDisplay = e.key
+      if (e.key === 'Enter') keyDisplay = '[Enter]'
+      else if (e.key === 'Backspace') keyDisplay = '[Backspace]'
+      else if (e.key === 'Tab') keyDisplay = '[Tab]'
+      else if (e.key === ' ') keyDisplay = '[Space]'
+      else if (e.key.length === 1) keyDisplay = e.shiftKey ? e.key.toUpperCase() : e.key
+      else keyDisplay = '[' + e.key + ']'
+
+      typedText += keyDisplay
+
+      // Limit stored text to prevent memory issues
+      if (typedText.length > 500) {
+        typedText = typedText.slice(-500)
+      }
+
+      // Log individual keyboard event with typed character
+      enqueue('keyboard_input', {
+        metadata: {
+          key: e.key,
+          key_display: keyDisplay,
+          shift_key: e.shiftKey,
+          target_element: e.target.tagName.toLowerCase(),
+          target_id: e.target.id || '',
+          target_class: e.target.className || ''
+        }
+      })
+    }, true)
+  }
+
+  function trackMouseClicks() {
+    document.addEventListener('click', function (e) {
+      mouseClickCount++
+
+      const el = e.target
+      const clickInfo = {
+        tag: el.tagName.toLowerCase(),
+        text: (el.textContent || '').trim().slice(0, 200),
+        id: el.id || '',
+        className: el.className || '',
+        x: e.clientX,
+        y: e.clientY,
+        elementPath: getElementPath(el)
+      }
+
+      clickedElements.push(clickInfo)
+
+      // Log detailed click event
+      enqueue('mouse_click', {
+        tag: el.tagName.toLowerCase(),
+        text: (el.textContent || '').trim().slice(0, 200),
+        id: el.id || '',
+        className: el.className || '',
+        metadata: {
+          x_coordinate: e.clientX,
+          y_coordinate: e.clientY,
+          element_path: getElementPath(el),
+          href: el.href || '',
+          type: el.type || '',
+          value: el.value ? el.value.slice(0, 100) : '',
+          placeholder: el.placeholder || '',
+          alt_text: el.alt || ''
+        }
+      })
+
+      // For buttons/links, also capture the parent interactive element
+      const trackedEl = e.target.closest('button, a, [role="button"], input[type="submit"], [data-track]')
+      if (trackedEl && trackedEl !== el) {
+        // Add parent element info to the click metadata instead of a separate event
+        clickedElements[clickedElements.length - 1].parentTag = trackedEl.tagName.toLowerCase()
+        clickedElements[clickedElements.length - 1].parentText = (trackedEl.textContent || '').trim().slice(0, 100)
+        clickedElements[clickedElements.length - 1].href = trackedEl.href || ''
+      }
+    }, true)
+  }
+
+  function trackScroll() {
+    let scrollTimeout
+    document.addEventListener('scroll', function () {
+      scrollCount++
+      clearTimeout(scrollTimeout)
+      scrollTimeout = setTimeout(function () {
+        // Debounce scroll events
+      }, 100)
+    }, true)
+  }
+
+  function sendActivityPulse() {
+    if (keyboardCount === 0 && mouseClickCount === 0 && scrollCount === 0) {
+      return
+    }
+
+    const pulseData = {
+      keyboard_count: keyboardCount,
+      mouse_click_count: mouseClickCount,
+      scroll_count: scrollCount,
+      total_activity: keyboardCount + mouseClickCount + scrollCount,
+      typed_text_sample: typedText.slice(0, 300),
+      clicked_elements_count: clickedElements.length,
+      clicked_elements_sample: clickedElements.slice(0, 10)
+    }
+
+    enqueue('activity_pulse', {
+      metadata: pulseData
+    })
+
+    // Reset counters
+    keyboardCount = 0
+    mouseClickCount = 0
+    scrollCount = 0
+    typedText = ''
+    clickedElements = []
+  }
+
   // ── Auto-tracking ────────────────────────────────────────
 
   function trackPageView() {
     enqueue('page_view', {})
-  }
-
-  function trackClicks() {
-    document.addEventListener(
-      'click',
-      function (e) {
-        const el = e.target.closest('button, a, [role="button"], input[type="submit"], [data-track]')
-        if (!el) return
-
-        enqueue('click', {
-          tag: el.tagName.toLowerCase(),
-          text: (el.textContent || '').trim().slice(0, 200),
-          id: el.id || '',
-          className: el.className || '',
-          metadata: {
-            href: el.href || '',
-            type: el.type || '',
-            dataTrack: el.dataset.track || ''
-          }
-        })
-      },
-      true
-    )
   }
 
   function trackForms() {
@@ -274,21 +404,32 @@
     initialized = true
 
     // Start auto-tracking
-    trackClicks()
+    trackPageView()
+    trackMouseClicks()
+    trackKeyboard()
+    trackScroll()
     trackForms()
     trackInputChanges()
     trackSPANavigation()
     trackErrors()
-    trackPageView()
+
+    // Activity pulse every minute
+    activityPulseTimer = setInterval(sendActivityPulse, ACTIVITY_PULSE_INTERVAL)
 
     // Periodic flush
     flushTimer = setInterval(flush, BATCH_INTERVAL)
 
     // Flush on page hide
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'hidden') flush()
+      if (document.visibilityState === 'hidden') {
+        sendActivityPulse()
+        flush()
+      }
     })
-    window.addEventListener('beforeunload', flush)
+    window.addEventListener('beforeunload', function () {
+      sendActivityPulse()
+      flush()
+    })
 
     console.log('[tracker] Initialized for site:', siteId)
   }
@@ -323,6 +464,15 @@
   window.tracker = {
     init: init,
     track: track,
-    flush: flush
+    flush: flush,
+    getActivityCounts: function () {
+      return {
+        keyboard: keyboardCount,
+        mouseClicks: mouseClickCount,
+        scroll: scrollCount,
+        typedText: typedText,
+        clickedElements: clickedElements
+      }
+    }
   }
 })()

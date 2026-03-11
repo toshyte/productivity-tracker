@@ -4,6 +4,9 @@ import { getWebEvents, getWebEventSites, type WebEvent } from '../lib/supabase'
 const EVENT_COLORS: Record<string, string> = {
   page_view: '#6366f1',
   click: '#22c55e',
+  mouse_click: '#22c55e',
+  keyboard_input: '#3b82f6',
+  activity_pulse: '#f59e0b',
   form_submit: '#f59e0b',
   input_change: '#8b5cf6',
   js_error: '#ef4444',
@@ -26,7 +29,7 @@ function EventBadge({ type }: { type: string }) {
         whiteSpace: 'nowrap'
       }}
     >
-      {type.replace('_', ' ')}
+      {type.replace(/_/g, ' ')}
     </span>
   )
 }
@@ -44,12 +47,27 @@ function shortenUrl(url: string) {
   }
 }
 
+function getEventDetail(ev: WebEvent): string {
+  if (ev.event_type === 'keyboard_input' && ev.metadata?.key_display) {
+    return String(ev.metadata.key_display)
+  }
+  if (ev.event_type === 'mouse_click' && ev.metadata?.x_coordinate != null) {
+    return `(${ev.metadata.x_coordinate}, ${ev.metadata.y_coordinate}) ${ev.element_text || ev.element_tag || ''}`
+  }
+  if (ev.event_type === 'activity_pulse' && ev.metadata) {
+    const m = ev.metadata as Record<string, unknown>
+    return `Keys: ${m.keyboard_count || 0} | Clicks: ${m.mouse_click_count || 0} | Scrolls: ${m.scroll_count || 0}`
+  }
+  return ev.element_text || ev.element_id || ev.element_tag || '\u2014'
+}
+
 interface Props {
   start: string
   end: string
+  userId?: string
 }
 
-export default function WebEvents({ start, end }: Props) {
+export default function WebEvents({ start, end, userId }: Props) {
   const [events, setEvents] = useState<WebEvent[]>([])
   const [sites, setSites] = useState<string[]>([])
   const [selectedSite, setSelectedSite] = useState<string>('')
@@ -62,17 +80,22 @@ export default function WebEvents({ start, end }: Props) {
 
   useEffect(() => {
     setLoading(true)
-    getWebEvents(start, end, selectedSite || undefined).then((data) => {
+    getWebEvents(start, end, selectedSite || undefined, userId).then((data) => {
       setEvents(data)
       setLoading(false)
     })
-  }, [start, end, selectedSite])
+  }, [start, end, selectedSite, userId])
 
   // Summary stats
   const totalEvents = events.length
-  const eventCounts: Record<string, number> = {}
+  let totalKeyboardEvents = 0
+  let totalMouseClicks = 0
+  let totalActivityPulses = 0
+
   for (const e of events) {
-    eventCounts[e.event_type] = (eventCounts[e.event_type] || 0) + 1
+    if (e.event_type === 'keyboard_input') totalKeyboardEvents++
+    if (e.event_type === 'mouse_click') totalMouseClicks++
+    if (e.event_type === 'activity_pulse') totalActivityPulses++
   }
   const uniquePages = new Set(events.map((e) => e.page_url)).size
   const errors = events.filter((e) => e.event_type === 'js_error' || e.event_type === 'promise_rejection').length
@@ -80,13 +103,7 @@ export default function WebEvents({ start, end }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* Header */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between'
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h3 style={{ margin: 0, fontSize: '16px' }}>Web App Events</h3>
         {sites.length > 0 && (
           <select
@@ -112,14 +129,18 @@ export default function WebEvents({ start, end }: Props) {
       </div>
 
       {/* Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px' }}>
         <div style={{ background: 'var(--card)', borderRadius: '8px', padding: '12px' }}>
           <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Total Events</div>
           <div style={{ fontSize: '24px', fontWeight: 700 }}>{totalEvents}</div>
         </div>
         <div style={{ background: 'var(--card)', borderRadius: '8px', padding: '12px' }}>
-          <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Clicks</div>
-          <div style={{ fontSize: '24px', fontWeight: 700, color: '#22c55e' }}>{eventCounts['click'] || 0}</div>
+          <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Keyboard Input</div>
+          <div style={{ fontSize: '24px', fontWeight: 700, color: '#3b82f6' }}>{totalKeyboardEvents}</div>
+        </div>
+        <div style={{ background: 'var(--card)', borderRadius: '8px', padding: '12px' }}>
+          <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Mouse Clicks</div>
+          <div style={{ fontSize: '24px', fontWeight: 700, color: '#22c55e' }}>{totalMouseClicks}</div>
         </div>
         <div style={{ background: 'var(--card)', borderRadius: '8px', padding: '12px' }}>
           <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' }}>Pages Visited</div>
@@ -158,7 +179,7 @@ export default function WebEvents({ start, end }: Props) {
               <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
                 <th style={{ padding: '8px 4px', color: '#94a3b8', fontWeight: 500 }}>Time</th>
                 <th style={{ padding: '8px 4px', color: '#94a3b8', fontWeight: 500 }}>Event</th>
-                <th style={{ padding: '8px 4px', color: '#94a3b8', fontWeight: 500 }}>Element</th>
+                <th style={{ padding: '8px 4px', color: '#94a3b8', fontWeight: 500 }}>Details</th>
                 <th style={{ padding: '8px 4px', color: '#94a3b8', fontWeight: 500 }}>Page</th>
               </tr>
             </thead>
@@ -183,13 +204,13 @@ export default function WebEvents({ start, end }: Props) {
                     <td
                       style={{
                         padding: '8px 4px',
-                        maxWidth: '200px',
+                        maxWidth: '250px',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap'
                       }}
                     >
-                      {ev.element_text || ev.element_id || ev.element_tag || '—'}
+                      {getEventDetail(ev)}
                     </td>
                     <td
                       style={{
@@ -201,7 +222,7 @@ export default function WebEvents({ start, end }: Props) {
                         color: '#94a3b8'
                       }}
                     >
-                      {ev.page_title || shortenUrl(ev.page_url) || '—'}
+                      {ev.page_title || shortenUrl(ev.page_url) || '\u2014'}
                     </td>
                   </tr>
                   {expandedId === ev.id && (
@@ -220,10 +241,12 @@ export default function WebEvents({ start, end }: Props) {
                             {
                               site: ev.site_id,
                               url: ev.page_url,
+                              title: ev.page_title,
                               element: {
                                 tag: ev.element_tag,
                                 id: ev.element_id,
-                                class: ev.element_class
+                                class: ev.element_class,
+                                text: ev.element_text
                               },
                               metadata: ev.metadata
                             },
