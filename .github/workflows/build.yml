@@ -1,0 +1,67 @@
+name: Build Installers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python (for native module builds)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Electron app
+        run: npm run build
+
+      - name: Build Mac installer
+        if: matrix.platform == 'mac'
+        run: npx electron-builder --mac --config electron-builder.yml
+
+      - name: Build Windows installer
+        if: matrix.platform == 'win'
+        run: npx electron-builder --win --config electron-builder.yml
+
+      - name: Upload Mac DMG (Apple Silicon)
+        if: matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-arm64-dmg
+          path: dist/*-arm64.dmg
+
+      - name: Upload Mac DMG (Intel)
+        if: matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-x64-dmg
+          path: dist/Productivity Tracker-1.0.0.dmg
+
+      - name: Upload Windows installer
+        if: matrix.platform == 'win'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/*.exe

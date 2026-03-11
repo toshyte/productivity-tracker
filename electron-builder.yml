@@ -1,0 +1,30 @@
+appId: com.productivity-tracker.app
+productName: Productivity Tracker
+directories:
+  output: dist
+  buildResources: resources
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+npmRebuild: true
+
+files:
+  - "**/*"
+  - "node_modules/uiohook-napi/**/*"
+  - "node_modules/better-sqlite3/**/*"

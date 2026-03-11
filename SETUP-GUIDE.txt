@@ -1,0 +1,181 @@
+================================================================
+  PRODUCTIVITY TRACKER — CLIENT SETUP GUIDE
+================================================================
+
+This system tracks desktop app usage, categorizes apps as
+productive/neutral/distracting, and shows visual reports on a
+web dashboard.
+
+SYSTEM COMPONENTS:
+  1. Web Dashboard   — hosted on Vercel (view reports in browser)
+  2. Supabase Cloud  — database + auth (already running)
+  3. Desktop App     — Mac/Windows Electron app (tracks apps)
+  4. Activity Monitor — Python script (tracks activity intensity)
+
+
+================================================================
+STEP 1: DEPLOY WEB DASHBOARD TO VERCEL
+================================================================
+
+ALREADY DEPLOYED! Live at:
+  https://web-jtseh4ogp-janis-projects-6b9135b3.vercel.app
+
+To redeploy (if needed):
+  1. Install Vercel CLI: npm install -g vercel
+  2. cd web/
+  3. Copy .env.example to .env and fill in the Supabase keys
+  4. npm install && vercel deploy --prod
+
+Dashboard login credentials:
+  Email:    janis@tracker.local
+  Password: tracker2026
+
+
+================================================================
+STEP 2: INSTALL DESKTOP APP ON CLIENT MACHINE
+================================================================
+
+Mac:
+  1. Open "Productivity Tracker.dmg" from the installers folder
+  2. Drag the app to Applications
+  3. Open the app — it will appear in the menu bar (system tray)
+  4. IMPORTANT: Grant permissions when prompted:
+     - System Settings > Privacy & Security > Accessibility
+       → Enable "Productivity Tracker"
+     - System Settings > Privacy & Security > Screen Recording
+       → Enable "Productivity Tracker" (for window titles)
+  5. The app starts tracking automatically in the background
+  6. Data syncs to Supabase cloud every 5 minutes
+
+Windows:
+  1. Run "Productivity Tracker Setup.exe" from installers folder
+  2. Follow the installation wizard
+  3. The app starts in the system tray
+  4. Data syncs to Supabase cloud every 5 minutes
+
+First-time configuration:
+  The desktop app stores Supabase credentials in its local SQLite
+  database. On first run, open the app tray menu and verify the
+  settings show the correct Supabase URL and credentials.
+
+
+================================================================
+STEP 3: INSTALL ACTIVITY MONITOR (OPTIONAL)
+================================================================
+
+The activity monitor tracks HOW ACTIVE the user is by counting
+keystrokes/min, clicks/min, and scrolls/min. It does NOT record
+what was typed or where was clicked.
+
+Mac:
+  1. Open Terminal
+  2. cd activity-monitor/
+  3. bash install.sh
+  4. Set your Supabase key:
+     export SUPABASE_KEY="eyJhbGciOi..."
+  5. Run: python3 monitor.py
+  6. Grant Accessibility + Input Monitoring permissions when asked
+
+Windows:
+  1. Install Python 3 from https://python.org
+  2. Open Command Prompt
+  3. cd activity-monitor\
+  4. install.bat
+  5. Set your Supabase key:
+     set SUPABASE_KEY=eyJhbGciOi...
+  6. Run: python monitor.py
+
+To run on startup (Mac):
+  Create a LaunchAgent plist or add to Login Items
+
+To run on startup (Windows):
+  Add a shortcut to the Startup folder or create a Task Scheduler entry
+
+
+================================================================
+STEP 4: VERIFY EVERYTHING IS WORKING
+================================================================
+
+1. Open the desktop app — check it appears in system tray/menu bar
+2. Use your computer normally for 5 minutes
+3. Open the web dashboard in your browser
+4. Sign in with: janis@tracker.local / tracker2026
+5. You should see:
+   - Activity Timeline (colored bar showing productive/distracting)
+   - App Usage pie chart
+   - Productivity Trend line chart
+   - Workflow Journey (chronological app sequence)
+   - Export panel for AI analysis
+
+If the timeline is empty:
+  - Wait 5 minutes for the first cloud sync
+  - Check that Accessibility permissions are granted (Mac)
+  - Check the desktop app is running in the tray
+
+
+================================================================
+SUPABASE DATABASE INFO
+================================================================
+
+Project URL:  https://zgipgqzskuzbtjldoezq.supabase.co
+Auth User:    janis@tracker.local / tracker2026
+
+Tables:
+  - tracking_entries  (desktop app tracking data)
+  - app_categories    (productive/neutral/distracting labels)
+  - web_events        (activity monitor + web SDK events)
+
+To recreate the database from scratch, run supabase-setup.sql
+in the Supabase SQL Editor (Dashboard > SQL Editor > New Query).
+
+
+================================================================
+USB CONTENTS
+================================================================
+
+USB/
+  installers/
+    Productivity Tracker (Mac Apple Silicon).dmg — Mac M1/M2/M3
+    Productivity Tracker (Mac Intel).dmg         — Mac Intel
+    (Windows .exe must be built on a Windows machine)
+  activity-monitor/
+    monitor.py          — Activity intensity monitor
+    requirements.txt    — Python dependencies
+    install.sh          — Mac/Linux install script
+    install.bat         — Windows install script
+  web/
+    (full web dashboard source — deploy to Vercel)
+  sdk/
+    tracker.js          — Web tracking SDK (embed in web apps)
+  supabase-setup.sql    — Database schema backup
+  SETUP-GUIDE.txt       — This file
+
+
+================================================================
+TROUBLESHOOTING
+================================================================
+
+"No activity recorded yet" on dashboard:
+  → Desktop app may not have synced yet (happens every 5 min)
+  → Check Accessibility permission is granted on Mac
+  → Verify the app is running (check system tray)
+
+"Invalid login credentials" on dashboard:
+  → Use: janis@tracker.local / tracker2026
+  → If user was deleted, recreate via Supabase SQL Editor
+
+Window titles are empty:
+  → Mac: Grant Accessibility permission in System Settings
+  → Restart the desktop app after granting permission
+
+Activity monitor auth failed:
+  → Check SUPABASE_KEY environment variable is set correctly
+  → The key is the "anon" key from Supabase > Settings > API
+
+Desktop app crashes on start:
+  → Try deleting the SQLite database and restarting
+  → Mac: ~/Library/Application Support/productivity-tracker/
+  → Windows: %APPDATA%/productivity-tracker/
+
+
+================================================================
