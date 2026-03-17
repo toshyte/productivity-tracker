@@ -1,5 +1,8 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { existsSync } from 'fs'
+import { join } from 'path'
+import { app } from 'electron'
 import type { ActiveWindow } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -89,123 +92,62 @@ async function getBrowserUrlMac(appName: string): Promise<string> {
   }
 }
 
+// ── Windows: compiled C# helper (no PowerShell!) ─────────────────
+
+let helperExePath: string | null = null
+
+async function ensureWindowsHelper(): Promise<string> {
+  if (helperExePath && existsSync(helperExePath)) return helperExePath
+
+  const userDataPath = app.getPath('userData')
+  const exePath = join(userDataPath, 'get-window.exe')
+
+  // If already compiled, reuse it
+  if (existsSync(exePath)) {
+    helperExePath = exePath
+    return exePath
+  }
+
+  // Find the C# source — it's bundled alongside the app
+  const csSource = join(__dirname, 'get-window.cs')
+
+  // Find csc.exe (.NET Framework compiler, available on all Windows)
+  const frameworkDir = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319'
+  const cscPath = join(frameworkDir, 'csc.exe')
+
+  if (!existsSync(cscPath)) {
+    // Try 32-bit framework
+    const csc32 = 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
+    if (!existsSync(csc32)) {
+      throw new Error('csc.exe not found — .NET Framework 4 required')
+    }
+    await execFileAsync(csc32, ['/nologo', '/optimize', `/out:${exePath}`, csSource], { windowsHide: true })
+  } else {
+    await execFileAsync(cscPath, ['/nologo', '/optimize', `/out:${exePath}`, csSource], { windowsHide: true })
+  }
+
+  helperExePath = exePath
+  return exePath
+}
+
 async function getActiveWindowWindows(): Promise<ActiveWindow | null> {
   try {
-    const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Diagnostics;
-public class Win32 {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
-}
-"@
-$hwnd = [Win32]::GetForegroundWindow()
-$pid = 0
-[Win32]::GetWindowThreadProcessId($hwnd, [ref]$pid) | Out-Null
-$proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-$title = New-Object System.Text.StringBuilder 256
-[Win32]::GetWindowText($hwnd, $title, 256) | Out-Null
-
-# Handle UWP apps (ApplicationFrameHost) — find the real child process
-$appName = $proc.ProcessName
-if ($appName -eq "ApplicationFrameHost") {
-  $childPids = @{}
-  $callback = [Win32+EnumWindowsProc]{
-    param($childHwnd, $lParam)
-    $childPid = 0
-    [Win32]::GetWindowThreadProcessId($childHwnd, [ref]$childPid) | Out-Null
-    if ($childPid -ne 0 -and $childPid -ne $pid) {
-      $childPids[$childPid] = $true
-    }
-    return $true
-  }
-  [Win32]::EnumChildWindows($hwnd, $callback, [IntPtr]::Zero) | Out-Null
-  foreach ($cpid in $childPids.Keys) {
-    $childProc = Get-Process -Id $cpid -ErrorAction SilentlyContinue
-    if ($childProc -and $childProc.ProcessName -ne "ApplicationFrameHost") {
-      $proc = $childProc
-      $appName = $childProc.ProcessName
-      break
-    }
-  }
-}
-
-# Get a friendly name from FileDescription, fall back to ProcessName
-$friendly = $appName
-try {
-  $desc = $proc.MainModule.FileVersionInfo.FileDescription
-  if ($desc -and $desc.Trim() -ne "") { $friendly = $desc.Trim() }
-} catch {}
-
-"$friendly|$($title.ToString())"
-`
-    const { stdout } = await execFileAsync('powershell', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-WindowStyle', 'Hidden',
-      '-Command',
-      script
-    ], { windowsHide: true })
+    const exePath = await ensureWindowsHelper()
+    const { stdout } = await execFileAsync(exePath, [], {
+      windowsHide: true,
+      timeout: 5000
+    })
     const parts = stdout.trim().split('|')
     const appName = parts[0] || 'Unknown'
     const windowTitle = parts.slice(1).join('|') || ''
 
-    // Ignore PowerShell itself (it's our own detection script)
-    if (appName === 'Windows PowerShell' || appName === 'powershell' || appName === 'pwsh') {
-      return null
-    }
+    if (!appName || appName === 'Unknown') return null
 
-    // Get URL for browsers on Windows
-    const url = BROWSER_APPS.has(appName) ? await getBrowserUrlWindows(appName) : ''
+    // Get URL for browsers on Windows (skip PowerShell-based URL detection for now)
+    const url = ''
 
     return { appName, windowTitle, url }
   } catch {
     return null
-  }
-}
-
-async function getBrowserUrlWindows(appName: string): Promise<string> {
-  try {
-    // Use UI Automation to read the address bar
-    const script = `
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::FocusedElement
-$walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
-# Walk up to find the address bar
-$el = $root
-for ($i = 0; $i -lt 20; $i++) {
-  if ($el -eq $null) { break }
-  $name = $el.Current.Name
-  $ctrl = $el.Current.ControlType.ProgrammaticName
-  if ($ctrl -eq "ControlType.Edit" -and ($name -match "address|url|Address|URL|location")) {
-    $val = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    if ($val) { Write-Output $val.Current.Value; exit }
-  }
-  $el = $walker.GetParent($el)
-}
-# Fallback: search the window for edit controls
-$window = [System.Windows.Automation.AutomationElement]::RootElement
-$condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-$edits = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-foreach ($edit in $edits) {
-  if ($edit.Current.Name -match "address|url|Address|URL") {
-    $val = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    if ($val) { Write-Output $val.Current.Value; exit }
-  }
-}
-`
-    const { stdout } = await execFileAsync('powershell', [
-      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script
-    ], { timeout: 3000, windowsHide: true })
-    return stdout.trim()
-  } catch {
-    return ''
   }
 }
