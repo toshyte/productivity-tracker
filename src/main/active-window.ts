@@ -148,12 +148,18 @@ try {
     const { stdout } = await execFileAsync('powershell', [
       '-NoProfile',
       '-NonInteractive',
+      '-WindowStyle', 'Hidden',
       '-Command',
       script
-    ])
+    ], { windowsHide: true })
     const parts = stdout.trim().split('|')
     const appName = parts[0] || 'Unknown'
     const windowTitle = parts.slice(1).join('|') || ''
+
+    // Ignore PowerShell itself (it's our own detection script)
+    if (appName === 'Windows PowerShell' || appName === 'powershell' || appName === 'pwsh') {
+      return null
+    }
 
     // Get URL for browsers on Windows
     const url = BROWSER_APPS.has(appName) ? await getBrowserUrlWindows(appName) : ''
@@ -196,8 +202,8 @@ foreach ($edit in $edits) {
 }
 `
     const { stdout } = await execFileAsync('powershell', [
-      '-NoProfile', '-NonInteractive', '-Command', script
-    ], { timeout: 3000 })
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script
+    ], { timeout: 3000, windowsHide: true })
     return stdout.trim()
   } catch {
     return ''

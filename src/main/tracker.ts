@@ -4,7 +4,10 @@ import { insertEntry, updateEntryEndTime } from './database'
 import { autoCategorizeNewApps } from './categories'
 
 const POLL_INTERVAL_MS = 5_000
-const IGNORED_APPS = new Set(['Electron', 'productivity-tracker', 'Productivity Tracker'])
+const IGNORED_APPS = new Set([
+  'Electron', 'productivity-tracker', 'Productivity Tracker',
+  'Windows PowerShell', 'powershell', 'pwsh', 'PowerShell'
+])
 
 interface CurrentEntry {
   appName: string
