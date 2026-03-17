@@ -96,10 +96,13 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Diagnostics;
 public class Win32 {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
 }
 "@
 $hwnd = [Win32]::GetForegroundWindow()
@@ -108,7 +111,39 @@ $pid = 0
 $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
 $title = New-Object System.Text.StringBuilder 256
 [Win32]::GetWindowText($hwnd, $title, 256) | Out-Null
-"$($proc.ProcessName)|$($title.ToString())"
+
+# Handle UWP apps (ApplicationFrameHost) — find the real child process
+$appName = $proc.ProcessName
+if ($appName -eq "ApplicationFrameHost") {
+  $childPids = @{}
+  $callback = [Win32+EnumWindowsProc]{
+    param($childHwnd, $lParam)
+    $childPid = 0
+    [Win32]::GetWindowThreadProcessId($childHwnd, [ref]$childPid) | Out-Null
+    if ($childPid -ne 0 -and $childPid -ne $pid) {
+      $childPids[$childPid] = $true
+    }
+    return $true
+  }
+  [Win32]::EnumChildWindows($hwnd, $callback, [IntPtr]::Zero) | Out-Null
+  foreach ($cpid in $childPids.Keys) {
+    $childProc = Get-Process -Id $cpid -ErrorAction SilentlyContinue
+    if ($childProc -and $childProc.ProcessName -ne "ApplicationFrameHost") {
+      $proc = $childProc
+      $appName = $childProc.ProcessName
+      break
+    }
+  }
+}
+
+# Get a friendly name from FileDescription, fall back to ProcessName
+$friendly = $appName
+try {
+  $desc = $proc.MainModule.FileVersionInfo.FileDescription
+  if ($desc -and $desc.Trim() -ne "") { $friendly = $desc.Trim() }
+} catch {}
+
+"$friendly|$($title.ToString())"
 `
     const { stdout } = await execFileAsync('powershell', [
       '-NoProfile',
