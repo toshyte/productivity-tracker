@@ -94,6 +94,68 @@ async function getBrowserUrlMac(appName: string): Promise<string> {
 
 // ── Windows: compiled C# helper (no PowerShell!) ─────────────────
 
+const CS_SOURCE = `
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+
+class GetWindow {
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    static void Main() {
+        try {
+            IntPtr hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) { Console.WriteLine("Unknown|"); return; }
+
+            uint pid = 0;
+            GetWindowThreadProcessId(hwnd, out pid);
+            Process proc = Process.GetProcessById((int)pid);
+
+            StringBuilder title = new StringBuilder(256);
+            GetWindowText(hwnd, title, 256);
+
+            string appName = proc.ProcessName;
+
+            // Handle UWP apps (ApplicationFrameHost)
+            if (appName == "ApplicationFrameHost") {
+                EnumChildWindows(hwnd, (childHwnd, lParam) => {
+                    uint childPid = 0;
+                    GetWindowThreadProcessId(childHwnd, out childPid);
+                    if (childPid != 0 && childPid != pid) {
+                        try {
+                            Process childProc = Process.GetProcessById((int)childPid);
+                            if (childProc.ProcessName != "ApplicationFrameHost") {
+                                proc = childProc;
+                                appName = childProc.ProcessName;
+                                return false;
+                            }
+                        } catch { }
+                    }
+                    return true;
+                }, IntPtr.Zero);
+            }
+
+            // Try to get friendly name from FileDescription
+            string friendly = appName;
+            try {
+                string desc = proc.MainModule.FileVersionInfo.FileDescription;
+                if (!string.IsNullOrWhiteSpace(desc)) friendly = desc.Trim();
+            } catch { }
+
+            Console.WriteLine(friendly + "|" + title.ToString());
+        } catch {
+            Console.WriteLine("Unknown|");
+        }
+    }
+}
+`
+
 let helperExePath: string | null = null
 
 async function ensureWindowsHelper(): Promise<string> {
@@ -101,6 +163,7 @@ async function ensureWindowsHelper(): Promise<string> {
 
   const userDataPath = app.getPath('userData')
   const exePath = join(userDataPath, 'get-window.exe')
+  const csPath = join(userDataPath, 'get-window.cs')
 
   // If already compiled, reuse it
   if (existsSync(exePath)) {
@@ -108,23 +171,29 @@ async function ensureWindowsHelper(): Promise<string> {
     return exePath
   }
 
-  // Find the C# source — it's bundled alongside the app
-  const csSource = join(__dirname, 'get-window.cs')
+  // Write C# source to userData (not asar!)
+  const { writeFileSync } = await import('fs')
+  writeFileSync(csPath, CS_SOURCE, 'utf-8')
 
   // Find csc.exe (.NET Framework compiler, available on all Windows)
-  const frameworkDir = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319'
-  const cscPath = join(frameworkDir, 'csc.exe')
+  const cscPaths = [
+    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
+  ]
 
-  if (!existsSync(cscPath)) {
-    // Try 32-bit framework
-    const csc32 = 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
-    if (!existsSync(csc32)) {
-      throw new Error('csc.exe not found — .NET Framework 4 required')
-    }
-    await execFileAsync(csc32, ['/nologo', '/optimize', `/out:${exePath}`, csSource], { windowsHide: true })
-  } else {
-    await execFileAsync(cscPath, ['/nologo', '/optimize', `/out:${exePath}`, csSource], { windowsHide: true })
+  let cscPath = ''
+  for (const p of cscPaths) {
+    if (existsSync(p)) { cscPath = p; break }
   }
+
+  if (!cscPath) {
+    throw new Error('csc.exe not found — .NET Framework 4 required')
+  }
+
+  await execFileAsync(cscPath, ['/nologo', '/optimize', `/out:${exePath}`, csPath], {
+    windowsHide: true,
+    timeout: 30000
+  })
 
   helperExePath = exePath
   return exePath
