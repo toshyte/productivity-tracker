@@ -1,6 +1,6 @@
 {
   "name": "productivity-tracker",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
