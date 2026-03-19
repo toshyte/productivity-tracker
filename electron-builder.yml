@@ -33,3 +33,7 @@ files:
   - "node_modules/uiohook-napi/**/*"
   - "node_modules/better-sqlite3/**/*"
   - "out/main/get-window.cs"
+
+asarUnpack:
+  - "node_modules/uiohook-napi/**/*"
+  - "node_modules/better-sqlite3/**/*"
