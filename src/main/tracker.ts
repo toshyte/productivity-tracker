@@ -49,6 +49,10 @@ export function toggleTracking(): boolean {
   return tracking
 }
 
+export function getCurrentAppName(): string {
+  return current?.appName || ''
+}
+
 export function finalizeCurrentEntry(): void {
   if (current?.dbId) {
     updateEntryEndTime(current.dbId, new Date().toISOString())

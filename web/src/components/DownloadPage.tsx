@@ -30,10 +30,10 @@ const INSTALLERS: InstallerInfo[] = [
   },
   {
     name: 'Windows',
-    url: `${GITHUB_RELEASE_BASE}/v1.6.0/Productivity.Tracker.Setup.1.6.0.exe`,
+    url: `${GITHUB_RELEASE_BASE}/v1.7.0/Productivity.Tracker.Setup.1.7.0.exe`,
     size: '~85 MB',
     icon: '🪟',
-    description: 'Windows 10/11 (64-bit) — v1.6.0 (keystroke & click tracking fix)',
+    description: 'Windows 10/11 (64-bit) — v1.7.0 (per-app keystroke & click tracking)',
     os: 'windows'
   },
   {
