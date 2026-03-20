@@ -213,7 +213,9 @@ async function flush(): Promise<void> {
 
 const WIN_INPUT_CS = `
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 class InputMonitor {
@@ -224,8 +226,14 @@ class InputMonitor {
     [DllImport("user32.dll")] static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
     [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG lpMsg);
     [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG lpMsg);
+    [DllImport("user32.dll")] static extern int ToUnicode(uint wVirtKey, uint wScanCode, byte[] lpKeyState, [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pwszBuff, int cchBuff, uint wFlags);
+    [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] lpKeyState);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
     delegate IntPtr LowLevelProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptX; public int ptY; }
@@ -241,14 +249,54 @@ class InputMonitor {
     static int keystrokes = 0;
     static int clicks = 0;
     static int scrolls = 0;
+    static List<string> keyBuffer = new List<string>();
+    static object keyLock = new object();
     static LowLevelProc kbProc;
     static LowLevelProc mouseProc;
     static IntPtr kbHook = IntPtr.Zero;
     static IntPtr mouseHook = IntPtr.Zero;
 
+    static string VkToString(uint vk, uint sc) {
+        // Named keys
+        switch (vk) {
+            case 0x08: return "Backspace";
+            case 0x09: return "Tab";
+            case 0x0D: return "Enter";
+            case 0x10: case 0xA0: case 0xA1: return "Shift";
+            case 0x11: case 0xA2: case 0xA3: return "Ctrl";
+            case 0x12: case 0xA4: case 0xA5: return "Alt";
+            case 0x14: return "CapsLock";
+            case 0x1B: return "Esc";
+            case 0x20: return "Space";
+            case 0x25: return "Left";
+            case 0x26: return "Up";
+            case 0x27: return "Right";
+            case 0x28: return "Down";
+            case 0x2E: return "Delete";
+            case 0x5B: case 0x5C: return "Win";
+            case 0x70: return "F1"; case 0x71: return "F2"; case 0x72: return "F3";
+            case 0x73: return "F4"; case 0x74: return "F5"; case 0x75: return "F6";
+            case 0x76: return "F7"; case 0x77: return "F8"; case 0x78: return "F9";
+            case 0x79: return "F10"; case 0x7A: return "F11"; case 0x7B: return "F12";
+        }
+        // Try to get the actual character using ToUnicode
+        byte[] keyState = new byte[256];
+        GetKeyboardState(keyState);
+        StringBuilder sb = new StringBuilder(4);
+        int result = ToUnicode(vk, sc, keyState, sb, sb.Capacity, 0);
+        if (result == 1 && sb.Length > 0) return sb.ToString();
+        // Fallback: printable ASCII range
+        if (vk >= 0x30 && vk <= 0x39) return ((char)vk).ToString();
+        if (vk >= 0x41 && vk <= 0x5A) return ((char)(vk + 32)).ToString();
+        return "key" + vk;
+    }
+
     static IntPtr KbCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0 && (int)wParam == WM_KEYDOWN) {
             Interlocked.Increment(ref keystrokes);
+            KBDLLHOOKSTRUCT kb = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+            string keyName = VkToString(kb.vkCode, kb.scanCode);
+            lock (keyLock) { keyBuffer.Add(keyName); }
         }
         return CallNextHookEx(kbHook, nCode, wParam, lParam);
     }
@@ -279,12 +327,16 @@ class InputMonitor {
 
         Console.Error.WriteLine("Hooks installed, monitoring input...");
 
-        // Timer: output counts every 5 seconds
+        // Timer: output counts + keys every 5 seconds
+        // Format: keystrokes|clicks|scrolls|key1,key2,key3,...
         var timer = new System.Threading.Timer(_ => {
             int k = Interlocked.Exchange(ref keystrokes, 0);
             int c = Interlocked.Exchange(ref clicks, 0);
             int s = Interlocked.Exchange(ref scrolls, 0);
-            Console.WriteLine(k + "|" + c + "|" + s);
+            List<string> keys;
+            lock (keyLock) { keys = new List<string>(keyBuffer); keyBuffer.Clear(); }
+            string keysStr = keys.Count > 0 ? string.Join(",", keys) : "";
+            Console.WriteLine(k + "|" + c + "|" + s + "|" + keysStr);
             Console.Out.Flush();
         }, null, 5000, 5000);
 
@@ -303,13 +355,22 @@ class InputMonitor {
 `
 
 let winInputExePath: string | null = null
+const INPUT_MONITOR_VERSION = '2' // bump to force recompile
 
 async function ensureWinInputHelper(): Promise<string> {
   const userDataPath = app.getPath('userData')
   const exePath = join(userDataPath, 'input-monitor.exe')
   const csPath = join(userDataPath, 'input-monitor.cs')
+  const versionPath = join(userDataPath, 'input-monitor.version')
 
-  if (existsSync(exePath)) return exePath
+  // Check version — recompile if outdated
+  const currentVersion = existsSync(versionPath) ? fs.readFileSync(versionPath, 'utf-8').trim() : ''
+  if (existsSync(exePath) && currentVersion === INPUT_MONITOR_VERSION) return exePath
+
+  // Delete old exe to force recompile
+  if (existsSync(exePath)) {
+    try { fs.unlinkSync(exePath) } catch { /* ignore */ }
+  }
 
   writeFileSync(csPath, WIN_INPUT_CS, 'utf-8')
 
@@ -330,7 +391,8 @@ async function ensureWinInputHelper(): Promise<string> {
     timeout: 30000
   })
 
-  logToFile('[activity-monitor] Compiled input-monitor.exe')
+  fs.writeFileSync(versionPath, INPUT_MONITOR_VERSION, 'utf-8')
+  logToFile('[activity-monitor] Compiled input-monitor.exe v' + INPUT_MONITOR_VERSION)
   return exePath
 }
 
@@ -352,11 +414,12 @@ function startWindowsInputMonitor(): void {
         const trimmed = line.trim()
         if (!trimmed) continue
         const parts = trimmed.split('|')
-        if (parts.length !== 3) continue
+        if (parts.length < 3) continue
 
         const k = parseInt(parts[0], 10) || 0
         const c = parseInt(parts[1], 10) || 0
         const s = parseInt(parts[2], 10) || 0
+        const keyNames = parts[3] ? parts[3].split(',').filter(Boolean) : []
 
         if (k === 0 && c === 0 && s === 0) continue
 
@@ -365,8 +428,11 @@ function startWindowsInputMonitor(): void {
         appData[appName].keystrokes += k
         appData[appName].clicks += c
         appData[appName].scrolls += s
+        if (keyNames.length > 0) {
+          appData[appName].typedKeys.push(...keyNames)
+        }
 
-        logToFile(`[activity-monitor] Win input: ${appName} k=${k} c=${c} s=${s}`)
+        logToFile(`[activity-monitor] Win input: ${appName} k=${k} c=${c} s=${s} keys=${keyNames.length}`)
       }
     })
 
