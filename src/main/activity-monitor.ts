@@ -1,24 +1,26 @@
 /**
- * Activity Monitor (built into Electron)
+ * Activity Monitor
  *
  * Tracks per-app activity including:
- *   - Actual keystrokes typed (key names)
- *   - Click positions (x, y)
- *   - Scroll counts
+ *   - Keystrokes count
+ *   - Click count
+ *   - Scroll count
  *
- * Runs uiohook-napi in the MAIN process (not a child process) because macOS
- * Accessibility permission only applies to the main app binary, not helpers.
- *
- * REQUIRES Accessibility permission on macOS.
+ * macOS: uses uiohook-napi in the MAIN process (Accessibility permission required)
+ * Windows: uses a compiled C# helper with SetWindowsHookEx (no special permissions)
  */
 
 import { join } from 'path'
 import { systemPreferences, app } from 'electron'
 import { getSetting } from './database'
 import { getCurrentAppName } from './tracker'
+import { execFile, ChildProcess } from 'child_process'
+import { promisify } from 'util'
+import { existsSync, writeFileSync } from 'fs'
 import os from 'os'
 import fs from 'fs'
 
+const execFileAsync = promisify(execFile)
 const LOG_FILE = join(app.getPath('userData'), 'activity-monitor.log')
 
 function logToFile(...args: unknown[]): void {
@@ -28,7 +30,7 @@ function logToFile(...args: unknown[]): void {
   console.log(msg)
 }
 
-// Map uiohook keycodes to readable key names
+// Map uiohook keycodes to readable key names (macOS only)
 const KEY_MAP: Record<number, string> = {
   1: 'Esc', 2: '1', 3: '2', 4: '3', 5: '4', 6: '5', 7: '6', 8: '7', 9: '8', 10: '9', 11: '0',
   12: '-', 13: '=', 14: 'Backspace', 15: 'Tab',
@@ -60,6 +62,7 @@ interface AppActivity {
 let appData: Record<string, AppActivity> = {}
 
 let uiohookInstance: any = null
+let winInputProcess: ChildProcess | null = null
 let flushIntervalId: ReturnType<typeof setInterval> | null = null
 let accessToken = ''
 let userId = ''
@@ -204,6 +207,190 @@ async function flush(): Promise<void> {
   }
 }
 
+// ── Windows C# Input Monitor ────────────────────────────────
+// Uses SetWindowsHookEx for WH_KEYBOARD_LL and WH_MOUSE_LL
+// Outputs "keystrokes|clicks|scrolls" to stdout every 5 seconds
+
+const WIN_INPUT_CS = `
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class InputMonitor {
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int idHook, LowLevelProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string lpModuleName);
+    [DllImport("user32.dll")] static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+    [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG lpMsg);
+    [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
+    delegate IntPtr LowLevelProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptX; public int ptY; }
+
+    const int WH_KEYBOARD_LL = 13;
+    const int WH_MOUSE_LL = 14;
+    const int WM_KEYDOWN = 0x0100;
+    const int WM_LBUTTONDOWN = 0x0201;
+    const int WM_RBUTTONDOWN = 0x0204;
+    const int WM_MBUTTONDOWN = 0x0207;
+    const int WM_MOUSEWHEEL = 0x020A;
+
+    static int keystrokes = 0;
+    static int clicks = 0;
+    static int scrolls = 0;
+    static LowLevelProc kbProc;
+    static LowLevelProc mouseProc;
+    static IntPtr kbHook = IntPtr.Zero;
+    static IntPtr mouseHook = IntPtr.Zero;
+
+    static IntPtr KbCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+        if (nCode >= 0 && (int)wParam == WM_KEYDOWN) {
+            Interlocked.Increment(ref keystrokes);
+        }
+        return CallNextHookEx(kbHook, nCode, wParam, lParam);
+    }
+
+    static IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+        if (nCode >= 0) {
+            int msg = (int)wParam;
+            if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN)
+                Interlocked.Increment(ref clicks);
+            else if (msg == WM_MOUSEWHEEL)
+                Interlocked.Increment(ref scrolls);
+        }
+        return CallNextHookEx(mouseHook, nCode, wParam, lParam);
+    }
+
+    static void Main() {
+        kbProc = new LowLevelProc(KbCallback);
+        mouseProc = new LowLevelProc(MouseCallback);
+
+        IntPtr hMod = GetModuleHandle(null);
+        kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, kbProc, hMod, 0);
+        mouseHook = SetWindowsHookEx(WH_MOUSE_LL, mouseProc, hMod, 0);
+
+        if (kbHook == IntPtr.Zero || mouseHook == IntPtr.Zero) {
+            Console.Error.WriteLine("Failed to install hooks");
+            return;
+        }
+
+        Console.Error.WriteLine("Hooks installed, monitoring input...");
+
+        // Timer: output counts every 5 seconds
+        var timer = new System.Threading.Timer(_ => {
+            int k = Interlocked.Exchange(ref keystrokes, 0);
+            int c = Interlocked.Exchange(ref clicks, 0);
+            int s = Interlocked.Exchange(ref scrolls, 0);
+            Console.WriteLine(k + "|" + c + "|" + s);
+            Console.Out.Flush();
+        }, null, 5000, 5000);
+
+        // Message loop required for low-level hooks
+        MSG msg;
+        while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) {
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+
+        UnhookWindowsHookEx(kbHook);
+        UnhookWindowsHookEx(mouseHook);
+        timer.Dispose();
+    }
+}
+`
+
+let winInputExePath: string | null = null
+
+async function ensureWinInputHelper(): Promise<string> {
+  const userDataPath = app.getPath('userData')
+  const exePath = join(userDataPath, 'input-monitor.exe')
+  const csPath = join(userDataPath, 'input-monitor.cs')
+
+  if (existsSync(exePath)) return exePath
+
+  writeFileSync(csPath, WIN_INPUT_CS, 'utf-8')
+
+  const cscPaths = [
+    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
+  ]
+
+  let cscPath = ''
+  for (const p of cscPaths) {
+    if (existsSync(p)) { cscPath = p; break }
+  }
+
+  if (!cscPath) throw new Error('csc.exe not found')
+
+  await execFileAsync(cscPath, ['/nologo', '/optimize', `/out:${exePath}`, csPath], {
+    windowsHide: true,
+    timeout: 30000
+  })
+
+  logToFile('[activity-monitor] Compiled input-monitor.exe')
+  return exePath
+}
+
+function startWindowsInputMonitor(): void {
+  ensureWinInputHelper().then((exePath) => {
+    winInputExePath = exePath
+    const proc = execFile(exePath, [], { windowsHide: true })
+    winInputProcess = proc
+
+    logToFile('[activity-monitor] Windows input monitor started (PID:', proc.pid, ')')
+
+    let lineBuffer = ''
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      lineBuffer += chunk.toString()
+      const lines = lineBuffer.split('\n')
+      lineBuffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        const parts = trimmed.split('|')
+        if (parts.length !== 3) continue
+
+        const k = parseInt(parts[0], 10) || 0
+        const c = parseInt(parts[1], 10) || 0
+        const s = parseInt(parts[2], 10) || 0
+
+        if (k === 0 && c === 0 && s === 0) continue
+
+        const appName = getCurrentApp()
+        ensureApp(appName)
+        appData[appName].keystrokes += k
+        appData[appName].clicks += c
+        appData[appName].scrolls += s
+
+        logToFile(`[activity-monitor] Win input: ${appName} k=${k} c=${c} s=${s}`)
+      }
+    })
+
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      logToFile('[activity-monitor] Win input stderr:', chunk.toString().trim())
+    })
+
+    proc.on('exit', (code) => {
+      logToFile('[activity-monitor] Win input monitor exited with code', code)
+      winInputProcess = null
+      // Restart after 10 seconds if still running
+      if (started) {
+        setTimeout(() => {
+          if (started) startWindowsInputMonitor()
+        }, 10000)
+      }
+    })
+  }).catch((err) => {
+    logToFile('[activity-monitor] Failed to start Windows input monitor:', err?.message || err)
+  })
+}
+
+// ── Public API ───────────────────────────────────────────────
+
 export function startActivityMonitor(): void {
   if (started) return
 
@@ -223,53 +410,56 @@ export function startActivityMonitor(): void {
     return
   }
 
-  try {
-    // Load uiohook in the MAIN process (not a child process)
-    // This is required because macOS Accessibility permission only applies
-    // to the main app binary, not to forked helper processes
-    const { uIOhook } = require('uiohook-napi')
-    uiohookInstance = uIOhook
-
-    let eventTotal = 0
-
-    uIOhook.on('keydown', (e: any) => {
-      eventTotal++
-      const app = getCurrentApp()
-      ensureApp(app)
-      appData[app].keystrokes++
-      const keyName = KEY_MAP[e.keycode] || `key${e.keycode}`
-      appData[app].typedKeys.push(keyName)
-    })
-
-    uIOhook.on('click', (e: any) => {
-      eventTotal++
-      const app = getCurrentApp()
-      ensureApp(app)
-      appData[app].clicks++
-      appData[app].clickPositions.push({ x: e.x, y: e.y, button: e.button || 1 })
-    })
-
-    uIOhook.on('wheel', () => {
-      eventTotal++
-      const app = getCurrentApp()
-      ensureApp(app)
-      appData[app].scrolls++
-    })
-
-    uIOhook.start()
-    logToFile('[activity-monitor] uiohook started in main process')
-
+  if (process.platform === 'win32') {
+    // Windows: use native C# input monitor with SetWindowsHookEx
+    logToFile('[activity-monitor] Starting Windows native input monitor')
     started = true
-
-    // Authenticate and start flushing
+    startWindowsInputMonitor()
     authenticate().then((ok) => {
       logToFile('[activity-monitor] Auth result:', ok)
       flushIntervalId = setInterval(flush, FLUSH_INTERVAL_MS)
-      logToFile('[activity-monitor] Running — tracking keystrokes, clicks, scrolls per app')
+      logToFile('[activity-monitor] Running — tracking keystrokes, clicks, scrolls per app (Windows)')
     })
-  } catch (err: any) {
-    logToFile('[activity-monitor] Failed to start uiohook:', err?.message || err)
-    logToFile('[activity-monitor] App continues without activity monitoring')
+  } else {
+    // macOS: use uiohook-napi in the main process
+    try {
+      const { uIOhook } = require('uiohook-napi')
+      uiohookInstance = uIOhook
+
+      uIOhook.on('keydown', (e: any) => {
+        const appName = getCurrentApp()
+        ensureApp(appName)
+        appData[appName].keystrokes++
+        const keyName = KEY_MAP[e.keycode] || `key${e.keycode}`
+        appData[appName].typedKeys.push(keyName)
+      })
+
+      uIOhook.on('click', (e: any) => {
+        const appName = getCurrentApp()
+        ensureApp(appName)
+        appData[appName].clicks++
+        appData[appName].clickPositions.push({ x: e.x, y: e.y, button: e.button || 1 })
+      })
+
+      uIOhook.on('wheel', () => {
+        const appName = getCurrentApp()
+        ensureApp(appName)
+        appData[appName].scrolls++
+      })
+
+      uIOhook.start()
+      logToFile('[activity-monitor] uiohook started in main process')
+
+      started = true
+
+      authenticate().then((ok) => {
+        logToFile('[activity-monitor] Auth result:', ok)
+        flushIntervalId = setInterval(flush, FLUSH_INTERVAL_MS)
+        logToFile('[activity-monitor] Running — tracking keystrokes, clicks, scrolls per app (macOS)')
+      })
+    } catch (err: any) {
+      logToFile('[activity-monitor] Failed to start uiohook:', err?.message || err)
+    }
   }
 }
 
@@ -281,9 +471,17 @@ export function stopActivityMonitor(): void {
     clearInterval(flushIntervalId)
     flushIntervalId = null
   }
-  try {
-    uiohookInstance?.stop()
-  } catch { /* ignore */ }
+
+  // Stop platform-specific monitor
+  if (process.platform === 'win32') {
+    if (winInputProcess) {
+      try { winInputProcess.kill() } catch { /* ignore */ }
+      winInputProcess = null
+    }
+  } else {
+    try { uiohookInstance?.stop() } catch { /* ignore */ }
+  }
+
   started = false
   logToFile('[activity-monitor] Stopped')
 }
